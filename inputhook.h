@@ -11,23 +11,23 @@ extern "C" {
 #include <gum/gum.h>
 }
 
-typedef struct {
+struct keybind_info_t {
     int unk1[4];
     int uinput_code;
     int unk2[9];
-} keybind_info_t;
+};
 
-typedef struct {
+struct uinput_info_t {
     int fd;
     keybind_info_t* keybinds;
-} uinput_info_t;
+};
 
-typedef struct {
+struct input_event_t {
     uint64_t time;
     uint16_t type;
     uint16_t code;
     int32_t value;
-} input_event_t;
+};
 
 enum class Action {
     REPLACE,
