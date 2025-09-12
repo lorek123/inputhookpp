@@ -3,6 +3,8 @@
 #include <thread>
 #include <sys/stat.h>
 #include <fstream>
+#include <format>
+#include <filesystem>
 
 
 InputHook::InputHook() {
@@ -227,10 +229,11 @@ int InputHook::hook_MICOM_FuncWriteKeyEvent(const int fd, const uint16_t type, c
 }
 
 ssize_t InputHook::hook_write(const int fd, input_event_t* events, const size_t count) {
-    char buf[255];
-    const int size = readlink(("/proc/self/fd/$fd" + std::to_string(fd)).c_str(), buf, sizeof(buf));
+    const std::string fdPath = std::format("/proc/self/fd/{}", fd);
+    std::error_code error;
+    const std::filesystem::path path = std::filesystem::read_symlink(fdPath, error);
 
-    if (size > 0 && std::string(buf) == "/dev/uinput" && count >= 16 && events[0].type == 1) {
+    if (!error && path == "/dev/uinput" && count >= 16 && events[0].type == 1) {
         INFO("write to /dev/uinput: code=%d, value=%d", events[0].code, events[0].value);
         auto [action, newKeycode] = handleKey(events[0].code, events[0].value);
 
