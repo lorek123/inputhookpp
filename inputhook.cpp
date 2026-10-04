@@ -3,11 +3,39 @@
 #include <thread>
 #include <sys/stat.h>
 #include <fstream>
+#include <ctime>
+#include <format>
+#include <filesystem>
+
+// BENCH: timing instrumentation, not for upstream
+static long bench_now_us() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000000L + ts.tv_nsec / 1000;
+}
+static thread_local long bench_launch_us = 0;
 
 
 InputHook::InputHook() {
     gum_init();
     INFO("Frida gum initialized");
+
+    {
+        constexpr int N = 1000;
+        long start = bench_now_us();
+        for (int i = 0; i < N; i++) {
+            const std::string fdPath = std::format("/proc/self/fd/{}", 1);
+            std::error_code error;
+            (void)std::filesystem::read_symlink(fdPath, error);
+        }
+        INFO("BENCH write_lookup_old avg_us=%ld (n=%d)", (bench_now_us() - start) / N, N);
+        start = bench_now_us();
+        struct stat st{};
+        for (int i = 0; i < N; i++) {
+            (void)fstat(1, &st);
+        }
+        INFO("BENCH write_lookup_new avg_ns=%ld (n=%d)", (bench_now_us() - start) * 1000 / N, N);
+    }
 
     INFO("Starting keybind thread");
     std::thread(&InputHook::watchConfigFile, this).detach();
@@ -116,11 +144,13 @@ void InputHook::launch(const std::string& cmd) {
 
     // Queue the command so popen() (a fork of this process) doesn't run on the
     // input thread. A single worker keeps commands in order, e.g. press before release.
+    const long start = bench_now_us();
     {
         std::lock_guard lock(m_launchMutex);
         m_launchQueue.push_back(cmd);
     }
     m_launchCv.notify_one();
+    bench_launch_us += bench_now_us() - start;
 }
 
 [[noreturn]] void InputHook::launchWorker() {
@@ -135,11 +165,13 @@ void InputHook::launch(const std::string& cmd) {
 
         INFO("Launching command: %s", cmd.c_str());
 
+        const long start = bench_now_us();
         FILE* proc = popen((cmd + " &").c_str(), "w");
         if (!proc)
             ERR("Failed to launch command: %s", cmd.c_str());
         else
             pclose(proc);
+        INFO("BENCH worker_popen_us=%ld", bench_now_us() - start);
     }
 }
 
@@ -217,10 +249,15 @@ int InputHook::trampoline_MICOM_FuncWriteKeyEvent(const int fd, const uint16_t t
 }
 
 int InputHook::hook_lginput(uinput_info_t* info, const int keyid, const int state) {
+    const long start = bench_now_us();
+    bench_launch_us = 0;
     const int uinput_code = info->keybinds[keyid].uinput_code;
     INFO("lginput_uinput_send_button called: keyid=%d, state=%d uinput_code=%d", keyid, state, uinput_code);
 
     auto [action, newKeycode] = handleKey(info->keybinds[keyid].uinput_code, state);
+    const long total = bench_now_us() - start;
+    INFO("BENCH key=%d state=%d action=%d hook_us=%ld launch_us=%ld handle_us=%ld",
+         uinput_code, state, static_cast<int>(action), total, bench_launch_us, total - bench_launch_us);
 
     if (action == Action::REPLACE) {
         const int orig = info->keybinds[keyid].uinput_code;
