@@ -67,4 +67,8 @@ set_target_properties(PkgConfig::FRIDA_GUM_STATIC PROPERTIES INTERFACE_LINK_LIBR
 target_link_libraries(inputhookpp PkgConfig::FRIDA_GUM_STATIC)
 target_include_directories(inputhookpp PRIVATE ${FRIDA_GUM_INCLUDE_DIRS})
 target_link_options(inputhookpp PRIVATE "-static-libstdc++")
+# Bind references to the statically linked glib/gobject/ffi copies inside this
+# library. Without this, they resolve to the target process's own (older)
+# system copies if already loaded (e.g. tvservice), which crashes in dlopen.
+target_link_options(inputhookpp PRIVATE "-Wl,-Bsymbolic")
 target_link_libraries(inputhookpp nlohmann_json::nlohmann_json)

@@ -5,6 +5,9 @@
 #include <nlohmann/json.hpp>
 #include <string_view>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <sys/types.h>
 
 extern "C" {
 #include "ezinject_module.h"
@@ -54,6 +57,8 @@ private:
 
     void launch(const std::string& cmd);
 
+    [[noreturn]] void launchWorker();
+
     [[noreturn]] void watchConfigFile();
 
     std::tuple<Action, int> handleKey(int keycode, int state);
@@ -70,9 +75,17 @@ private:
 
     ssize_t hook_write(int fd, input_event_t* events, size_t count);
 
+    bool isUinput(int fd) const;
+
     GumInterceptor* m_interceptor{nullptr};
     nlohmann::json m_keybinds{};
     std::mutex m_mutex{};
+
+    std::mutex m_launchMutex{};
+    std::condition_variable m_launchCv{};
+    std::deque<std::string> m_launchQueue{};
+
+    dev_t m_uinputRdev{0};
 
     lginput_uinput_send_button_t* orig_lginput_uinput_send_button{nullptr};
     MICOM_FuncWriteKeyEvent_t* orig_MICOM_FuncWriteKeyEvent{nullptr};
