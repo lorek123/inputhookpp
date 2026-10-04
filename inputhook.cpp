@@ -5,6 +5,28 @@
 #include <fstream>
 #include <format>
 #include <filesystem>
+#include <ctime>
+
+// BENCH: timing instrumentation, not for upstream
+static long bench_now_us() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000000L + ts.tv_nsec / 1000;
+}
+static thread_local long bench_launch_us = 0;
+
+static void bench_write_path_lookup() {
+    // Cost of the per-call work hook_write does before it knows the fd is /dev/uinput.
+    constexpr int N = 1000;
+    const long start = bench_now_us();
+    for (int i = 0; i < N; i++) {
+        const std::string fdPath = std::format("/proc/self/fd/{}", 1);
+        std::error_code error;
+        const std::filesystem::path path = std::filesystem::read_symlink(fdPath, error);
+        (void)path;
+    }
+    INFO("BENCH write_lookup avg_us=%ld (n=%d)", (bench_now_us() - start) / N, N);
+}
 
 
 InputHook::InputHook() {
@@ -110,11 +132,13 @@ void InputHook::launch(const std::string& cmd) {
 
     INFO("Launching command: %s", cmd.c_str());
 
+    const long start = bench_now_us();
     FILE* proc = popen((cmd + " &").c_str(), "w");
     if (!proc)
         ERR("Failed to launch command: %s", cmd.c_str());
     else
         pclose(proc);
+    bench_launch_us += bench_now_us() - start;
 }
 
 std::tuple<Action, int> InputHook::handleKey(const int keycode, const int state) {
@@ -191,10 +215,15 @@ int InputHook::trampoline_MICOM_FuncWriteKeyEvent(const int fd, const uint16_t t
 }
 
 int InputHook::hook_lginput(uinput_info_t* info, const int keyid, const int state) {
+    const long start = bench_now_us();
+    bench_launch_us = 0;
     const int uinput_code = info->keybinds[keyid].uinput_code;
     INFO("lginput_uinput_send_button called: keyid=%d, state=%d uinput_code=%d", keyid, state, uinput_code);
 
     auto [action, newKeycode] = handleKey(info->keybinds[keyid].uinput_code, state);
+    const long total = bench_now_us() - start;
+    INFO("BENCH key=%d state=%d action=%d hook_us=%ld launch_us=%ld handle_us=%ld",
+         uinput_code, state, static_cast<int>(action), total, bench_launch_us, total - bench_launch_us);
 
     if (action == Action::REPLACE) {
         const int orig = info->keybinds[keyid].uinput_code;
@@ -269,6 +298,7 @@ int lib_preinit(struct injcode_user* user) {
 
 int lib_main(int argc, char* argv[]) {
     INFO("InputHook initialized");
+    bench_write_path_lookup();
     new InputHook();
     return 0;
 }
