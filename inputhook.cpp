@@ -3,8 +3,6 @@
 #include <thread>
 #include <sys/stat.h>
 #include <fstream>
-#include <format>
-#include <filesystem>
 
 
 InputHook::InputHook() {
@@ -13,6 +11,14 @@ InputHook::InputHook() {
 
     INFO("Starting keybind thread");
     std::thread(&InputHook::watchConfigFile, this).detach();
+
+    INFO("Starting launch thread");
+    std::thread(&InputHook::launchWorker, this).detach();
+
+    struct stat uinput_stat{};
+    if (stat("/dev/uinput", &uinput_stat) == 0 && S_ISCHR(uinput_stat.st_mode)) {
+        m_uinputRdev = uinput_stat.st_rdev;
+    }
 
     m_interceptor = gum_interceptor_obtain();
     if (!m_interceptor) {
@@ -108,13 +114,33 @@ void InputHook::launch(const std::string& cmd) {
         return;
     }
 
-    INFO("Launching command: %s", cmd.c_str());
+    // Queue the command so popen() (a fork of this process) doesn't run on the
+    // input thread. A single worker keeps commands in order, e.g. press before release.
+    {
+        std::lock_guard lock(m_launchMutex);
+        m_launchQueue.push_back(cmd);
+    }
+    m_launchCv.notify_one();
+}
 
-    FILE* proc = popen((cmd + " &").c_str(), "w");
-    if (!proc)
-        ERR("Failed to launch command: %s", cmd.c_str());
-    else
-        pclose(proc);
+[[noreturn]] void InputHook::launchWorker() {
+    while (true) {
+        std::string cmd;
+        {
+            std::unique_lock lock(m_launchMutex);
+            m_launchCv.wait(lock, [this] { return !m_launchQueue.empty(); });
+            cmd = std::move(m_launchQueue.front());
+            m_launchQueue.pop_front();
+        }
+
+        INFO("Launching command: %s", cmd.c_str());
+
+        FILE* proc = popen((cmd + " &").c_str(), "w");
+        if (!proc)
+            ERR("Failed to launch command: %s", cmd.c_str());
+        else
+            pclose(proc);
+    }
 }
 
 std::tuple<Action, int> InputHook::handleKey(const int keycode, const int state) {
@@ -228,12 +254,16 @@ int InputHook::hook_MICOM_FuncWriteKeyEvent(const int fd, const uint16_t type, c
     return orig_MICOM_FuncWriteKeyEvent(fd, type, code, value);
 }
 
-ssize_t InputHook::hook_write(const int fd, input_event_t* events, const size_t count) {
-    const std::string fdPath = std::format("/proc/self/fd/{}", fd);
-    std::error_code error;
-    const std::filesystem::path path = std::filesystem::read_symlink(fdPath, error);
+bool InputHook::isUinput(const int fd) const {
+    // This runs on every write() in the process, so avoid the readlink of
+    // /proc/self/fd: compare the device number instead (one fstat syscall).
+    struct stat fd_stat{};
+    return m_uinputRdev != 0 && fstat(fd, &fd_stat) == 0 && S_ISCHR(fd_stat.st_mode) &&
+           fd_stat.st_rdev == m_uinputRdev;
+}
 
-    if (!error && path == "/dev/uinput" && count >= 16 && events[0].type == 1) {
+ssize_t InputHook::hook_write(const int fd, input_event_t* events, const size_t count) {
+    if (count >= 16 && isUinput(fd) && events[0].type == 1) {
         INFO("write to /dev/uinput: code=%d, value=%d", events[0].code, events[0].value);
         auto [action, newKeycode] = handleKey(events[0].code, events[0].value);
 
