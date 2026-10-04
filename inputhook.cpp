@@ -143,11 +143,13 @@ std::tuple<Action, int> InputHook::handleKey(const int keycode, const int state)
         }
 
         if (action == "exec" || action == "launch") {
+            // exec fires on press and release, with the state passed as $1
+            if (action == "exec" && (state == 0 || state == 1)) {
+                INFO("Key %d is exec, state %d", keycode, state);
+                launch(keybind.at("command").get<std::string>() + " " + std::to_string(state));
+            }
+            // launch fires on press only
             if (state == 1) {
-                if (action == "exec") {
-                    INFO("Key %d is exec", keycode);
-                    launch(keybind.at("command"));
-                }
                 if (action == "launch") {
                     INFO("Key %d is launch", keycode);
                     nlohmann::json json;
