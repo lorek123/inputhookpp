@@ -3,10 +3,24 @@
 #include <thread>
 #include <sys/stat.h>
 #include <fstream>
+#include <unistd.h>
+
+// MEMTEST: log resident memory at each startup step, not for upstream
+static void mem_log(const char* step) {
+    long size = 0, resident = 0;
+    if (FILE* f = fopen("/proc/self/statm", "r")) {
+        if (fscanf(f, "%ld %ld", &size, &resident) != 2) { size = resident = 0; }
+        fclose(f);
+    }
+    const long page_kb = sysconf(_SC_PAGESIZE) / 1024;
+    INFO("MEMTEST %s rss_kb=%ld vsz_kb=%ld", step, resident * page_kb, size * page_kb);
+}
 
 
 InputHook::InputHook() {
+    mem_log("before_gum_init");
     gum_init();
+    mem_log("after_gum_init");
     INFO("Frida gum initialized");
 
     INFO("Starting keybind thread");
@@ -25,10 +39,13 @@ InputHook::InputHook() {
         ERR("Failed to obtain interceptor");
         return;
     }
+    mem_log("after_interceptor_obtain");
     INFO("Resolving functions");
     resolveFunctions();
+    mem_log("after_resolve");
     INFO("Applying hooks");
     applyHooks();
+    mem_log("after_apply_hooks");
 }
 
 void InputHook::resolveFunctions() {
@@ -104,6 +121,10 @@ bool InputHook::loadKeybinds() {
             }
         }
         using namespace std::chrono_literals;
+        static int ticks = 0;
+        if (++ticks == 10 || ticks == 60 || ticks == 300) {
+            mem_log(ticks == 10 ? "after_10s" : ticks == 60 ? "after_60s" : "after_300s");
+        }
         std::this_thread::sleep_for(1s);
     }
 }
@@ -298,6 +319,7 @@ int lib_preinit(struct injcode_user* user) {
 }
 
 int lib_main(int argc, char* argv[]) {
+    mem_log("lib_main_start");
     INFO("InputHook initialized");
     new InputHook();
     return 0;
