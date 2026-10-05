@@ -67,4 +67,10 @@ set_target_properties(PkgConfig::FRIDA_GUM_STATIC PROPERTIES INTERFACE_LINK_LIBR
 target_link_libraries(inputhookpp PkgConfig::FRIDA_GUM_STATIC)
 target_include_directories(inputhookpp PRIVATE ${FRIDA_GUM_INCLUDE_DIRS})
 target_link_options(inputhookpp PRIVATE "-static-libstdc++")
+# Don't export symbols from the statically linked archives (frida-gum, glib,
+# gobject, libffi, pcre2, libstdc++). Exported, they interpose with the
+# target process's own system copies, which breaks dlopen in processes that
+# already use GObject (e.g. tvservice). ezinject only needs crt_init, and the
+# lib_* entry points come from object files, so they stay exported.
+target_link_options(inputhookpp PRIVATE "-Wl,--exclude-libs,ALL")
 target_link_libraries(inputhookpp nlohmann_json::nlohmann_json)
